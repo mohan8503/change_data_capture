@@ -1,16 +1,15 @@
 {
-    "name": "pg-src-connector",
+    "name": "sql-server-connector",
     "config": {
-        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
-        "tasks.max": "1",
-        "database.hostname": "postgres",
-        "database.port": "5432",
-        "database.user": "postgres",
-        "database.password": "postgres",
-        "database.dbname": "postgres",
-        "database.server.name": "postgres",
-        "database.include.list": "postgres",
-        "topic.prefix": "debezium",
-        "schema.include.list": "commerce"
+        "connector.class": "io.debezium.connector.sqlserver.SqlServerConnector",
+        "database.hostname": "34.86.225.241",
+        "database.port": "1433",
+        "database.user": "sqlserver",
+        "database.password": "~B9bQa(o,d@cj6dh",
+        "database.names": "test",
+        "database.server.name": "sql-server-debezium",
+        "schema.include.list": "dbo.details",
+        "topic.prefix": "sql-server-debezium",
+        "database.encrypt": "false"
     }
 }
