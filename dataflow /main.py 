@@ -1,0 +1,69 @@
+import json
+import apache_beam as beam
+from apache_beam.options.pipeline_options import PipelineOptions,SetupOptions
+from apache_beam.transforms import window, trigger
+from apache_beam.pvalue import TaggedOutput
+import datetime
+
+def json_data(data):
+    
+    data = json.loads(data.decode('utf-8'))
+    return data
+
+def router_fn(data):
+    if data["payload"]['op'] == 'r' :
+       return  TaggedOutput(data,'create')
+    elif data["payload"]['op'] == 'c' :
+       return  TaggedOutput(data,'append') 
+    elif data["payload"]['op'] == 'u' :
+       return  TaggedOutput(data,'update') 
+    elif data["payload"]['op'] == 'd' :
+       return  TaggedOutput(data,'delete') 
+    
+def set_schema(data):
+   config = {'int32':'INTEGER','string':'STRING'}
+   schema_bigquery = [] 
+   for fields in data['schema']['fields'][0]['fields']:
+         x = {"name": f"{fields['field']}","type":f"{config.get(fields['type'])}"}
+         schema_bigquery.append(x)
+   schema_bigquery.append({"name": "op","type":"STRING"})
+   schema_bigquery.append({"name": "table_name","type":"STRING"})
+   schema_bigquery.append({"name": "source_ts_ms","type":"DATETIME"})
+   schema_bigquery.append({"name": "debezium_ts_ms","type":"DATETIME"})
+   schema_bigquery = {"fields":schema_bigquery}
+   return data['payload']['source']['table'],schema_bigquery
+
+def format_data(data):
+   data_to_load = data['payload']['after']
+   data_to_load['op'] = data['payload']['op']
+   data_to_load['table_name'] = data['payload']['source']['table']
+   data_to_load['source_ts_ms'] = datetime.datetime.utcfromtimestamp(data['payload']['source']['ts_ms'] / 1000)
+   data_to_load['debezium_ts_ms'] = datetime.datetime.utcfromtimestamp(data['payload']['ts_ms'] / 1000)
+   return data_to_load
+
+options = PipelineOptions(streaming=True)
+p = beam.Pipeline(options=options)
+pub_sub_data = (p
+                |beam.io.ReadFromPubSub(subscription
+                                       ='projects/climate-delta-dev/subscriptions/debezium.tables.all-sub')
+                |beam.Map(json_data)
+                |"Windowing to Trigger after each element" >> beam.WindowInto(
+                            window.FixedWindows(2),
+                            accumulation_mode=trigger.AccumulationMode.DISCARDING))
+
+schema_dict = pub_sub_data|"attach schema " >> beam.Map(set_schema)
+schema_dict|beam.Map(print)
+staging_to_bq = (pub_sub_data
+                  |beam.Map(format_data)
+                  # |"a">>beam.Map(print))
+                  |"Wrting to BigQuery" >> beam.io.WriteToBigQuery(
+                              table=lambda element:'climate-delta-dev:speedwell_stage.{datatable}'.format(datatable=element['table_name']),
+                              schema=lambda table,element : element[table.split('.')[-1]],schema_side_inputs = (beam.pvalue.AsDict(schema_dict),),
+                              create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
+                              write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+                              method="STREAMING_INSERTS"))
+                                            # |"Divide Into Streams" >> beam.Map(router_fn).with_outputs('create','append','delete','update')
+                # |"" >>
+
+result = p.run()
+result.wait_until_finish()
