@@ -21,10 +21,13 @@ def router_fn(data):
        return  TaggedOutput(data,'delete') 
     
 def set_schema(data):
-   config = {'int32':'INTEGER','string':'STRING'}
+   config = {'int32':'INTEGER','string':'STRING',"io.debezium.time.Timestamp":"DATETIME","double":"FLOAT"}
    schema_bigquery = [] 
    for fields in data['schema']['fields'][0]['fields']:
-         x = {"name": f"{fields['field']}","type":f"{config.get(fields['type'])}"}
+         if fields.get('name',None):
+            x = {"name": f"{fields['field']}","type":f"{config.get(fields['name'])}"}
+         else:
+            x = {"name": f"{fields['field']}","type":f"{config.get(fields['type'])}"} 
          schema_bigquery.append(x)
    schema_bigquery.append({"name": "op","type":"STRING"})
    schema_bigquery.append({"name": "table_name","type":"STRING"})
@@ -34,7 +37,17 @@ def set_schema(data):
    return data['payload']['source']['table'],schema_bigquery
 
 def format_data(data):
-   data_to_load = data['payload']['after']
+   datetime_fields = []
+   for fields in data['schema']['fields'][0]['fields']:
+      if fields.get('name',None)=='io.debezium.time.Timestamp':
+         datetime_fields.append(fields['field'])
+   if data['payload']['op'] == 'd':
+      data_to_load = data['payload']['before']
+   else :    
+      data_to_load = data['payload']['after']
+   for k,v in data_to_load.items():
+      if k in datetime_fields:
+         data_to_load[k] = datetime.datetime.utcfromtimestamp(data_to_load[k] / 1000)
    data_to_load['op'] = data['payload']['op']
    data_to_load['table_name'] = data['payload']['source']['table']
    data_to_load['source_ts_ms'] = datetime.datetime.utcfromtimestamp(data['payload']['source']['ts_ms'] / 1000)
