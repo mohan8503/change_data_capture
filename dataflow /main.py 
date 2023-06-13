@@ -4,9 +4,9 @@ from apache_beam.options.pipeline_options import PipelineOptions,SetupOptions
 from apache_beam.transforms import window, trigger
 from apache_beam.pvalue import TaggedOutput
 import datetime
+from google.cloud import bigquery 
 
 def json_data(data):
-    
     data = json.loads(data.decode('utf-8'))
     return data
 
@@ -33,8 +33,7 @@ def set_schema(data):
    schema_bigquery.append({"name": "table_name","type":"STRING"})
    schema_bigquery.append({"name": "source_ts_ms","type":"DATETIME"})
    schema_bigquery.append({"name": "debezium_ts_ms","type":"DATETIME"})
-   schema_bigquery = {"fields":schema_bigquery}
-   return data['payload']['source']['table'],schema_bigquery
+   return schema_bigquery
 
 def format_data(data):
    datetime_fields = []
@@ -45,6 +44,7 @@ def format_data(data):
       data_to_load = data['payload']['before']
    else :    
       data_to_load = data['payload']['after']
+   print(data_to_load)
    for k,v in data_to_load.items():
       if k in datetime_fields:
          data_to_load[k] = datetime.datetime.utcfromtimestamp(data_to_load[k] / 1000)
@@ -54,29 +54,44 @@ def format_data(data):
    data_to_load['debezium_ts_ms'] = datetime.datetime.utcfromtimestamp(data['payload']['ts_ms'] / 1000)
    return data_to_load
 
-options = PipelineOptions(streaming=True)
-p = beam.Pipeline(options=options)
-pub_sub_data = (p
-                |beam.io.ReadFromPubSub(subscription
-                                       ='projects/climate-delta-dev/subscriptions/debezium.tables.all-sub')
-                |beam.Map(json_data)
-                |"Windowing to Trigger after each element" >> beam.WindowInto(
-                            window.FixedWindows(2),
-                            accumulation_mode=trigger.AccumulationMode.DISCARDING))
+class create_table(beam.DoFn):
+   def process(self,data):
+      project_id = "climate-delta-dev"
+      dataset_id = "speedwell_stage"
+      client = bigquery.Client(project=project_id)
+      dataset_ref = client.dataset(dataset_id)
+      table_ref = dataset_ref.table(data['payload']['source']['table'])
+      try : 
+         table = client.get_table(table_ref)
+      except :    
+         print(set_schema(data))
+         schema = [bigquery.SchemaField.from_api_repr(api_repr) for api_repr in set_schema(data)]
+         table = bigquery.Table(table_ref, schema=schema)
+         table.time_partitioning = bigquery.TimePartitioning(type_=bigquery.TimePartitioningType.DAY)
+         client.create_table(table)
+      data = format_data(data)
+      print(data)
+      yield data
 
-schema_dict = pub_sub_data|"attach schema " >> beam.Map(set_schema)
-schema_dict|beam.Map(print)
-staging_to_bq = (pub_sub_data
-                  |beam.Map(format_data)
-                  # |"a">>beam.Map(print))
-                  |"Wrting to BigQuery" >> beam.io.WriteToBigQuery(
-                              table=lambda element:'climate-delta-dev:speedwell_stage.{datatable}'.format(datatable=element['table_name']),
-                              schema=lambda table,element : element[table.split('.')[-1]],schema_side_inputs = (beam.pvalue.AsDict(schema_dict),),
-                              create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
-                              write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-                              method="STREAMING_INSERTS"))
-                                            # |"Divide Into Streams" >> beam.Map(router_fn).with_outputs('create','append','delete','update')
-                # |"" >>
 
-result = p.run()
-result.wait_until_finish()
+def run():
+      options = PipelineOptions(streaming=True)
+      p = beam.Pipeline(options=options)
+      pub_sub_data = (p
+                     |"Read From PubSub" >> beam.io.ReadFromPubSub(subscription
+                                             ='projects/climate-delta-dev/subscriptions/debezium.all-sub')
+                     |"Format PubSub records" >> beam.Map(json_data)
+                     |"Windowing to Trigger after each element" >> beam.WindowInto(
+                                 window.FixedWindows(2),
+                                 accumulation_mode=trigger.AccumulationMode.DISCARDING)
+                     |"Create log Tables" >> beam.ParDo(create_table())
+                     |"Dump Data to log Tables" >> beam.io.WriteToBigQuery(
+                                    table=lambda element:'climate-delta-dev:speedwell_stage.{datatable}'.format(datatable=element['table_name']),
+                                    create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
+                                    write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+                                    method="STREAMING_INSERTS")
+                     )
+
+      result = p.run()
+      result.wait_until_finish()
+run()
