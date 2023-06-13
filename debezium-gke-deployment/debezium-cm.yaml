@@ -19,7 +19,8 @@ data:
       debezium.source.database.dbname=test
       debezium.source.database.server.name=debezium
       debezium.sink.pravega.scope=empty
-      debezium.source.table.whitelist=dbo.Details,dbo.Status,dbo.tblRain
+      debezium.source.schema.include.list=dbo
+      debezium.snapshot.new.tables=parallel
       debezium.source.database.history.file.filename=/tmp/FileDatabaseHistory.dat
       debezium.source.database.history=io.debezium.relational.history.FileDatabaseHistory
       debezium.transforms=Reroute
